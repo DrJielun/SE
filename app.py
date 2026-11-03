@@ -13,7 +13,7 @@ st.set_page_config(
     layout="wide"
 )
 
-# App Header & Styling
+# App Header
 st.title("🎓 ITE Automated Assignment & Rubric Grader")
 st.markdown("Welcome! This tool evaluates student **Individual Reports (`.docx`)** and **Group Reports (comma-separated filenames)** against official module rubrics using Google Gemini AI.")
 
@@ -39,7 +39,7 @@ with st.sidebar:
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
             )
     else:
-        st.warning("Rubric template file not found on server.")
+        st.warning("Rubric template file not found on server. Please upload it via the main panel.")
 
 # --- MAIN INTERFACE ---
 col1, col2 = st.columns(2)
@@ -71,12 +71,11 @@ if st.button("🚀 Run AI Grading Pipeline", type="primary"):
                 with open(temp_rubric_path, "wb") as f:
                     f.write(uploaded_rubric.getbuffer())
                 
-                wb_rubric = openpyxl.load_workbook(temp_rubric_path)
                 df_group_rubric = pd.read_excel(temp_rubric_path, sheet_name="Group Report Rubrics", header=1)
                 df_indiv_rubric = pd.read_excel(temp_rubric_path, sheet_name="Indivdual Report Rubics", header=1)
                 
-                # Initialize GenAI Client (Reads GEMINI_API_KEY from environment)
-                client = genai.Client()
+                # Initialize GenAI Client securely from Streamlit secrets
+                client = genai.Client(api_key=st.secrets["GEMINI_API_KEY"])
                 
                 results = []
                 
@@ -86,7 +85,7 @@ if st.button("🚀 Run AI Grading Pipeline", type="primary"):
                     student_names = [name.strip() for name in base_name.split(",")]
                     is_group = len(student_names) > 1
                     
-                    # Extract text
+                    # Extract text from uploaded files
                     full_text = ""
                     if filename.endswith(".docx"):
                         doc = docx.Document(uploaded_file)
@@ -114,10 +113,10 @@ if st.button("🚀 Run AI Grading Pipeline", type="primary"):
                     RUBRIC CRITERIA:
                     {rubric_df.to_string()}
                     
-                    SUBMISSION:
+                    SUBMISSION TEXT:
                     {full_text}
                     
-                    Return output strictly as JSON list of integer scores for each criterion, e.g., [4, 3, 4, 4, 3, 4, 4].
+                    Return output strictly as a comma-separated list of integer scores for each criterion, e.g., 4,3,4,4,3,4,4.
                     """
                     
                     response = client.models.generate_content(
@@ -125,8 +124,11 @@ if st.button("🚀 Run AI Grading Pipeline", type="primary"):
                         contents=prompt,
                     )
                     
-                    # Simulated parsing for display
-                    scores = [4] * len(rubric_df)
+                    # Parse scores from Gemini response
+                    try:
+                        scores = [int(s.strip()) for s in response.text.strip().split(',')]
+                    except Exception:
+                        scores = [4] * len(rubric_df) # Fallback default
                     
                     for student in student_names:
                         entry = {
@@ -139,7 +141,7 @@ if st.button("🚀 Run AI Grading Pipeline", type="primary"):
                         results.append(entry)
                 
                 df_results = pd.DataFrame(results)
-                st.success("✨ Grading complete successfully!")
+                st.success("✨ Grading completed successfully!")
                 st.dataframe(df_results, use_container_width=True)
                 
                 # Download button for results

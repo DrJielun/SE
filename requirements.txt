@@ -1,1 +1,6 @@
-streamlit, pandas, openpyxl, python-docx, python-pptx, google-genai
+streamlit
+pandas
+openpyxl
+python-docx
+python-pptx
+google-genai

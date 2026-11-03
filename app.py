@@ -1,10 +1,12 @@
 import os
+import time
 import streamlit as st
 import pandas as pd
 import openpyxl
 import docx
 import pptx
 from google import genai
+from google.genai.errors import APIError
 
 # Page Configuration
 st.set_page_config(
@@ -42,7 +44,6 @@ if st.button("🚀 Run AI Grading Pipeline", type="primary"):
     else:
         with st.spinner("Analyzing student documents and grading against rubrics using Gemini AI..."):
             try:
-                # Automatically load the official rubric file from the repo
                 rubric_file_path = "Assessment_Rubrics (1).xlsx"
                 if not os.path.exists(rubric_file_path):
                     st.error(f"Official rubric file '{rubric_file_path}' not found in the repository.")
@@ -50,9 +51,7 @@ if st.button("🚀 Run AI Grading Pipeline", type="primary"):
                     df_group_rubric = pd.read_excel(rubric_file_path, sheet_name="Group Report Rubrics", header=1)
                     df_indiv_rubric = pd.read_excel(rubric_file_path, sheet_name="Indivdual Report Rubics", header=1)
                     
-                    # Initialize GenAI Client securely from Streamlit secrets
                     client = genai.Client(api_key=st.secrets["GEMINI_API_KEY"])
-                    
                     results = []
                     
                     for uploaded_file in uploaded_students:
@@ -61,7 +60,6 @@ if st.button("🚀 Run AI Grading Pipeline", type="primary"):
                         student_names = [name.strip() for name in base_name.split(",")]
                         is_group = len(student_names) > 1
                         
-                        # Extract text from uploaded files
                         full_text = ""
                         if filename.endswith(".docx"):
                             doc = docx.Document(uploaded_file)
@@ -82,7 +80,6 @@ if st.button("🚀 Run AI Grading Pipeline", type="primary"):
                         rubric_df = df_group_rubric if is_group else df_indiv_rubric
                         report_type = "Group Report" if is_group else "Individual Report"
                         
-                        # Prompt Gemini for rubric grading
                         prompt = f"""
                         You are an expert mechanical engineering educator. Grade this student submission based strictly on the rubric (0 to 4 scale).
                         
@@ -95,16 +92,28 @@ if st.button("🚀 Run AI Grading Pipeline", type="primary"):
                         Return output strictly as a comma-separated list of integer scores for each criterion, e.g., 4,3,4,4,3,4,4.
                         """
                         
-                        response = client.models.generate_content(
-                            model='gemini-3.8-flash',
-                            contents=prompt,
-                        )
+                        # Retry logic for 503 errors (high demand / temporary unavailability)
+                        response_text = None
+                        max_retries = 3
+                        for attempt in range(max_retries):
+                            try:
+                                response = client.models.generate_content(
+                                    model='gemini-3.8-flash',
+                                    contents=prompt,
+                                )
+                                response_text = response.text
+                                break
+                            except APIError as api_err:
+                                if "503" in str(api_err) and attempt < max_retries - 1:
+                                    time.sleep(2 * (attempt + 1)) # Wait 2s, then 4s before retrying
+                                    continue
+                                else:
+                                    raise api_err
                         
-                        # Parse scores from Gemini response
                         try:
-                            scores = [int(s.strip()) for s in response.text.strip().split(',')]
+                            scores = [int(s.strip()) for s in response_text.strip().split(',')]
                         except Exception:
-                            scores = [4] * len(rubric_df) # Fallback default
+                            scores = [4] * len(rubric_df)
                         
                         for student in student_names:
                             entry = {
@@ -120,7 +129,6 @@ if st.button("🚀 Run AI Grading Pipeline", type="primary"):
                     st.success("✨ Grading completed successfully!")
                     st.dataframe(df_results, use_container_width=True)
                     
-                    # Download button for results
                     output_csv = df_results.to_csv(index=False).encode('utf-8')
                     st.download_button(
                         label="📥 Download Master Gradebook (CSV)",

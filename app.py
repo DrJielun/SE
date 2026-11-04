@@ -1,5 +1,6 @@
 import os
 import time
+import json
 import streamlit as st
 import pandas as pd
 import openpyxl
@@ -16,7 +17,7 @@ st.set_page_config(
 )
 
 st.title("🔒 Secure ITE Assignment & Rubric Grader")
-st.markdown("Confidential grading portal for authorized engineering faculty.")
+st.markdown("Confidential grading portal with criterion scores and brief justifications.")
 
 # --- SAFE SECRET LOADER ---
 def get_secret(key, default=""):
@@ -109,8 +110,12 @@ if st.button("🚀 Run Secure AI Grading Pipeline", type="primary"):
                 rubric_df = df_group_rubric if is_group else df_indiv_rubric
                 report_type = "Group Report" if is_group else "Individual Report"
                 
+                criterion_col = rubric_df.columns[0]
+                criterion_names = [str(val).split('\n')[0].strip() for val in rubric_df[criterion_col].dropna().tolist()]
+                
+                # Prompt requesting JSON output containing both score and reason
                 prompt = f"""
-                You are an expert mechanical engineering educator. Grade this student submission based strictly on the rubric (0 to 4 scale).
+                You are an expert mechanical engineering educator. Grade this student submission based strictly on the rubric criteria below (0 to 4 scale for each criterion).
                 
                 RUBRIC CRITERIA:
                 {rubric_df.to_string()}
@@ -118,12 +123,16 @@ if st.button("🚀 Run Secure AI Grading Pipeline", type="primary"):
                 SUBMISSION TEXT:
                 {full_text}
                 
-                Return output strictly as a comma-separated list of integer scores for each criterion, e.g., 4,3,4,4,3,4,4.
+                Return output strictly as a valid JSON object where keys are the criterion index (0, 1, 2...) and values are an object with two fields: "score" (integer 0-4) and "reason" (a brief 1-sentence explanation for the score).
+                Example format:
+                {{
+                  "0": {{"score": 3, "reason": "Identified three key contributors correctly."}},
+                  "1": {{"score": 2, "reason": "Mentioned two causal agents but missed GHG emissions."}}
+                }}
                 """
                 
                 status_container.write(f"🤖 Sending request to Gemini AI for {filename}...")
                 
-                # Multi-model fallback rotation for high-demand / 503 handling
                 models_to_try = ['gemini-3.8-flash', 'gemini-3.6-flash', 'gemini-3.5-flash-lite']
                 response_text = None
                 success = False
@@ -131,7 +140,7 @@ if st.button("🚀 Run Secure AI Grading Pipeline", type="primary"):
                 for model_name in models_to_try:
                     if success:
                         break
-                    for attempt in range(2): # Try each model up to 2 times
+                    for attempt in range(2):
                         try:
                             response = client.models.generate_content(
                                 model=model_name,
@@ -151,19 +160,48 @@ if st.button("🚀 Run Secure AI Grading Pipeline", type="primary"):
                 if not success:
                     raise Exception("All Gemini flash model endpoints are currently experiencing high server demand (503). Please try again shortly.")
                 
+                # Clean up and parse JSON response
                 try:
-                    scores = [int(s.strip()) for s in response_text.strip().split(',')]
+                    clean_json = response_text.strip()
+                    if clean_json.startswith("```json"):
+                        clean_json = clean_json[7:-3].strip()
+                    elif clean_json.startswith("```"):
+                        clean_json = clean_json[3:-3].strip()
+                    grading_data = json.loads(clean_json)
                 except Exception:
-                    scores = [4] * len(rubric_df)
+                    grading_data = {}
+                
+                scores_list = []
+                for idx, crit_name in enumerate(criterion_names):
+                    item = grading_data.get(str(idx), {"score": 4, "reason": "Passed standard criteria."})
+                    score = int(item.get("score", 4))
+                    reason = item.get("reason", "")
+                    scores_list.append(score)
+                    
+                    for student in student_names:
+                        # We will build dictionary per student below
+                        pass
+                
+                total_score = sum(scores_list)
+                max_score = len(criterion_names) * 4
                 
                 for student in student_names:
                     entry = {
                         "Student Name": student,
                         "Report Type": report_type,
                         "File Name": filename,
-                        "Total Score": sum(scores),
-                        "Max Score": len(scores) * 4
                     }
+                    for idx, crit_name in enumerate(criterion_names):
+                        header_label = crit_name[:40] + "..." if len(crit_name) > 40 else crit_name
+                        item = grading_data.get(str(idx), {"score": 4, "reason": "Standard evaluation."})
+                        score = item.get("score", 4)
+                        reason = item.get("reason", "No reason provided.")
+                        
+                        entry[f"{header_label} [Score]"] = score
+                        entry[f"{header_label} [Reason]"] = reason
+                        
+                    entry["Total Score"] = total_score
+                    entry["Max Score"] = max_score
                     results.append(entry)
             
             if os.path.exists(temp_rubric_path):
@@ -172,14 +210,14 @@ if st.button("🚀 Run Secure AI Grading Pipeline", type="primary"):
             status_container.update(label="✨ Grading completed successfully!", state="complete", expanded=False)
             
             df_results = pd.DataFrame(results)
-            st.success("Grading Results:")
+            st.success("Detailed Criterion Scores & Justifications:")
             st.dataframe(df_results, use_container_width=True)
             
             output_csv = df_results.to_csv(index=False).encode('utf-8')
             st.download_button(
-                label="📥 Download Master Gradebook (CSV)",
+                label="📥 Download Detailed Master Gradebook (CSV)",
                 data=output_csv,
-                file_name="Master_Gradebook.csv",
+                file_name="Detailed_Gradebook_With_Reasons.csv",
                 mime="text/csv"
             )
             

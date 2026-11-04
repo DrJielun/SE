@@ -18,17 +18,20 @@ st.set_page_config(
 st.title("🔒 Secure ITE Assignment & Rubric Grader")
 st.markdown("Confidential grading portal for authorized engineering faculty.")
 
-# --- RENDER & STREAMLIT SECRETS COMPATIBILITY HELPER ---
+# --- SAFE SECRET LOADER (Prevents Render crashes) ---
 def get_secret(key, default=""):
-    # 1. Check system environment variables first (Render / Docker / local env)
-    val = os.getenv(key)
-    if val:
-        return val
-    # 2. Fallback to Streamlit secrets (Streamlit Community Cloud)
+    # 1. Check Render / system environment variables first
+    if key in os.environ:
+        return os.environ[key]
+    
+    # 2. Safely check Streamlit secrets only if running on Streamlit Cloud
     try:
-        return st.secrets.get(key, default)
+        if hasattr(st, "secrets") and key in st.secrets:
+            return st.secrets[key]
     except Exception:
-        return default
+        pass
+        
+    return default
 
 # --- SECURITY LAYER: MARKER PASSCODE GATE ---
 marker_passcode = st.text_input("🔑 Enter Authorized Marker Passcode:", type="password")

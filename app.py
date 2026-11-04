@@ -18,19 +18,15 @@ st.set_page_config(
 st.title("🔒 Secure ITE Assignment & Rubric Grader")
 st.markdown("Confidential grading portal for authorized engineering faculty.")
 
-# --- SAFE SECRET LOADER (Prevents Render crashes) ---
+# --- SAFE SECRET LOADER ---
 def get_secret(key, default=""):
-    # 1. Check Render / system environment variables first
     if key in os.environ:
         return os.environ[key]
-    
-    # 2. Safely check Streamlit secrets only if running on Streamlit Cloud
     try:
         if hasattr(st, "secrets") and key in st.secrets:
             return st.secrets[key]
     except Exception:
         pass
-        
     return default
 
 # --- SECURITY LAYER: MARKER PASSCODE GATE ---
@@ -127,23 +123,33 @@ if st.button("🚀 Run Secure AI Grading Pipeline", type="primary"):
                 
                 status_container.write(f"🤖 Sending request to Gemini AI for {filename}...")
                 
+                # Multi-model fallback rotation for high-demand / 503 handling
+                models_to_try = ['gemini-3.8-flash', 'gemini-3.6-flash', 'gemini-3.5-flash-lite']
                 response_text = None
-                max_retries = 3
-                for attempt in range(max_retries):
-                    try:
-                        response = client.models.generate_content(
-                            model='gemini-3.8-flash',
-                            contents=prompt,
-                        )
-                        response_text = response.text
+                success = False
+                
+                for model_name in models_to_try:
+                    if success:
                         break
-                    except APIError as api_err:
-                        if "503" in str(api_err) and attempt < max_retries - 1:
-                            status_container.warning(f"⚠️ Server busy (503). Retrying attempt {attempt+2} in 2s...")
-                            time.sleep(2 * (attempt + 1))
-                            continue
-                        else:
-                            raise api_err
+                    for attempt in range(2): # Try each model up to 2 times
+                        try:
+                            response = client.models.generate_content(
+                                model=model_name,
+                                contents=prompt,
+                            )
+                            response_text = response.text
+                            success = True
+                            break
+                        except APIError as api_err:
+                            if "503" in str(api_err):
+                                status_container.warning(f"⚠️ Model {model_name} busy (503). Retrying...")
+                                time.sleep(2)
+                                continue
+                            else:
+                                raise api_err
+                
+                if not success:
+                    raise Exception("All Gemini flash model endpoints are currently experiencing high server demand (503). Please try again shortly.")
                 
                 try:
                     scores = [int(s.strip()) for s in response_text.strip().split(',')]

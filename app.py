@@ -18,9 +18,21 @@ st.set_page_config(
 st.title("🔒 Secure ITE Assignment & Rubric Grader")
 st.markdown("Confidential grading portal for authorized engineering faculty.")
 
+# --- RENDER & STREAMLIT SECRETS COMPATIBILITY HELPER ---
+def get_secret(key, default=""):
+    # 1. Check system environment variables first (Render / Docker / local env)
+    val = os.getenv(key)
+    if val:
+        return val
+    # 2. Fallback to Streamlit secrets (Streamlit Community Cloud)
+    try:
+        return st.secrets.get(key, default)
+    except Exception:
+        return default
+
 # --- SECURITY LAYER: MARKER PASSCODE GATE ---
 marker_passcode = st.text_input("🔑 Enter Authorized Marker Passcode:", type="password")
-correct_passcode = st.secrets.get("MARKER_PASSWORD", "itecoursestaff2026")
+correct_passcode = get_secret("MARKER_PASSWORD", "itecoursestaff2026")
 
 if marker_passcode != correct_passcode:
     st.warning("⚠️ Access restricted. Please enter the confidential marker passcode to proceed.")
@@ -60,7 +72,12 @@ if st.button("🚀 Run Secure AI Grading Pipeline", type="primary"):
             df_group_rubric = pd.read_excel(temp_rubric_path, sheet_name="Group Report Rubrics", header=1)
             df_indiv_rubric = pd.read_excel(temp_rubric_path, sheet_name="Indivdual Report Rubics", header=1)
             
-            client = genai.Client(api_key=st.secrets["GEMINI_API_KEY"])
+            api_key = get_secret("GEMINI_API_KEY")
+            if not api_key:
+                st.error("Gemini API key not found in environment or secrets.")
+                st.stop()
+                
+            client = genai.Client(api_key=api_key)
             results = []
             
             for uploaded_file in uploaded_students:

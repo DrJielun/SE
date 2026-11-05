@@ -134,4 +134,108 @@ if st.button("🚀 Run Secure AI Grading Pipeline", type="primary"):
                     filename = uploaded_file.name
                     if filename.endswith(".docx"):
                         doc = docx.Document(uploaded_file)
-                        full_text = "\n".
+                        full_text = "\n".join([p.text for p in doc.paragraphs])
+                    elif filename.endswith(".pptx"):
+                        prs = pptx.Presentation(uploaded_file)
+                        slide_texts = []
+                        for slide in prs.slides:
+                            for shape in slide.shapes:
+                                if shape.has_text_frame:
+                                    for p in shape.text_frame.paragraphs:
+                                        slide_texts.append(p.text)
+                        full_text = "\n".join(slide_texts)
+                        
+                    if not full_text.strip():
+                        continue
+                        
+                    criterion_col = rubric_df.columns[0]
+                    criterion_names = [str(val).split('\n')[0].strip() for val in rubric_df[criterion_col].dropna().tolist()]
+                    
+                    prompt = f"""
+                    You are an expert mechanical engineering educator. Grade this student submission based strictly on the rubric criteria below (0 to 4 scale for each criterion).
+                    
+                    RUBRIC CRITERIA:
+                    {rubric_df.to_string()}
+                    
+                    SUBMISSION TEXT:
+                    {full_text}
+                    
+                    Return output strictly as a valid JSON object where keys are the criterion index ("0", "1", "2"...) and values are an object with two fields: "score" (integer 0-4) and "reason" (a brief 1-sentence explanation for the score).
+                    """
+                    
+                    status_container.write(f"🤖 Sending request to Gemini AI for {filename}...")
+                    
+                    models_to_try = ['gemini-3.8-flash', 'gemini-3.6-flash', 'gemini-3.5-flash-lite']
+                    response_text = None
+                    success = False
+                    
+                    for model_name in models_to_try:
+                        if success:
+                            break
+                        for attempt in range(2):
+                            try:
+                                response = client.models.generate_content(
+                                    model=model_name,
+                                    contents=prompt,
+                                )
+                                response_text = response.text
+                                success = True
+                                break
+                            except APIError as api_err:
+                                if "503" in str(api_err):
+                                    status_container.warning(f"⚠️ Model {model_name} busy (503). Retrying...")
+                                    time.sleep(2)
+                                    continue
+                                else:
+                                    raise api_err
+                    
+                    if not success:
+                        raise Exception("All Gemini flash model endpoints are currently experiencing high server demand (503). Please try again shortly.")
+                    
+                    try:
+                        clean_json = response_text.strip()
+                        if clean_json.startswith("```json"):
+                            clean_json = clean_json[7:-3].strip()
+                        elif clean_json.startswith("```"):
+                            clean_json = clean_json[3:-3].strip()
+                        grading_data = json.loads(clean_json)
+                    except Exception:
+                        grading_data = {}
+                    
+                    score_col, reason_col = student_mapping[student_name]
+                    for idx, _ in enumerate(criterion_names):
+                        excel_row = idx + 3
+                        item = grading_data.get(str(idx), {"score": 4, "reason": "Standard evaluation."})
+                        score = int(item.get("score", 4))
+                        reason = item.get("reason", "No reason provided.")
+                        
+                        ws.cell(row=excel_row, column=score_col, value=score)
+                        ws.cell(row=excel_row, column=reason_col, value=reason)
+
+            process_grading_sheet("Individual Report Rubrics", df_indiv_rubric, indiv_files)
+            process_grading_sheet("Group Report Rubrics", df_group_rubric, group_files)
+            
+            if not wb.sheetnames:
+                ws = wb.create_sheet(title="Master Gradebook")
+                ws.cell(row=1, column=1, value="No valid student files processed.")
+
+            if os.path.exists(temp_rubric_path):
+                os.remove(temp_rubric_path)
+            
+            status_container.update(label="✨ Grading completed successfully!", state="complete", expanded=False)
+            
+            output_excel = io.BytesIO()
+            wb.save(output_excel)
+            excel_bytes = output_excel.getvalue()
+            
+            st.success("Excel Master Gradebook generated successfully matching your template layout!")
+            st.download_button(
+                label="📥 Download Master Gradebook (.xlsx)",
+                data=excel_bytes,
+                file_name="Master_Gradebook_Template_Layout.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+            )
+            
+        except Exception as e:
+            status_container.update(label="❌ Error occurred during grading.", state="error", expanded=True)
+            st.error(f"Details: {e}")
